@@ -18,9 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { installWithRetry, resolveAttemptTimeoutMs } from './install-electron-with-retry.mjs';
+import {
+  installWithRetry,
+  resolveAttemptTimeoutMs,
+  runInstallerAttempt,
+} from './install-electron-with-retry.mjs';
 
 test('waits through a sustained transient Electron download outage', async () => {
   const attempts = [];
@@ -91,4 +99,29 @@ test('resolves the per-attempt timeout from the environment', () => {
   assert.equal(resolveAttemptTimeoutMs({ [variable]: '15000' }), 15_000);
   assert.equal(resolveAttemptTimeoutMs({ [variable]: '0' }), 600_000);
   assert.equal(resolveAttemptTimeoutMs({ [variable]: 'soon' }), 600_000);
+});
+
+test('aborts an installer attempt that outlives the timeout', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-electron-attempt-'));
+  const installerPath = join(directory, 'stall-installer.cjs');
+  await writeFile(installerPath, 'setInterval(() => {}, 60_000);\n');
+  const reports = [];
+
+  try {
+    const result = runInstallerAttempt({
+      installerPath,
+      launcherPath: fileURLToPath(new URL('./run-electron-installer.cjs', import.meta.url)),
+      repositoryRoot: process.cwd(),
+      timeoutMs: 2_000,
+      report: (text) => reports.push(text),
+    });
+
+    assert.equal(result.timedOut, true);
+    assert.equal(result.status, null);
+    assert.equal(result.signal, 'SIGTERM');
+    assert.equal(result.spawnError, undefined);
+    assert.match(reports.join(''), /attempt aborted after 2000ms/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

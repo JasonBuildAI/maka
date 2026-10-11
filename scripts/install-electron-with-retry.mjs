@@ -27,7 +27,8 @@ import { fileURLToPath } from 'node:url';
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BASE_DELAY_MS = 2_000;
 // A stalled download never errors, so the retry classifier cannot see it; capping
-// each attempt keeps the install bounded. MAKA_ELECTRON_INSTALL_ATTEMPT_TIMEOUT_MS raises it.
+// each attempt keeps the install bounded (ten minutes covers the ~143 MB artifact
+// above ~2 Mbps). MAKA_ELECTRON_INSTALL_ATTEMPT_TIMEOUT_MS raises the cap.
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 10 * 60_000;
 const transientCodes = new Set([
   'ECONNRESET',
@@ -107,6 +108,47 @@ export function electronInstallerSpawnOptions(repositoryRoot) {
   };
 }
 
+export function runInstallerAttempt({
+  installerPath,
+  launcherPath,
+  repositoryRoot,
+  timeoutMs,
+  spawn = spawnSync,
+  report = (text) => process.stderr.write(text),
+}) {
+  const child = spawn(process.execPath, [launcherPath, installerPath], {
+    ...electronInstallerSpawnOptions(repositoryRoot),
+    timeout: timeoutMs,
+  });
+  const timedOut = child.error?.code === 'ETIMEDOUT';
+  if (child.stderr) {
+    report(child.stderr);
+  }
+  if (child.error && !timedOut) {
+    const message = child.error.stack ?? child.error.message;
+    report(`${message}\n`);
+    return {
+      status: child.status,
+      signal: child.signal,
+      spawnError: true,
+      context: child.output?.[3] ?? '',
+      stderr: `${child.stderr ?? ''}\n${message}`,
+    };
+  }
+  if (timedOut) {
+    report(
+      `[install-electron] attempt aborted after ${timeoutMs}ms without completing the download\n`,
+    );
+  }
+  return {
+    status: child.status,
+    signal: child.signal,
+    timedOut,
+    context: child.output?.[3] ?? '',
+    stderr: child.stderr ?? '',
+  };
+}
+
 async function main() {
   // electron is declared by apps/desktop, not the workspace root, so anchor
   // resolution at that package. Resolving from this script (under scripts/)
@@ -118,39 +160,14 @@ async function main() {
   const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const attemptTimeoutMs = resolveAttemptTimeoutMs();
 
-  const result = await installWithRetry(() => {
-    const child = spawnSync(process.execPath, [launcher, installer], {
-      ...electronInstallerSpawnOptions(repositoryRoot),
-      timeout: attemptTimeoutMs,
-    });
-    const timedOut = child.error?.code === 'ETIMEDOUT';
-    if (child.stderr) {
-      process.stderr.write(child.stderr);
-    }
-    if (child.error && !timedOut) {
-      const message = child.error.stack ?? child.error.message;
-      process.stderr.write(`${message}\n`);
-      return {
-        status: child.status,
-        signal: child.signal,
-        spawnError: true,
-        context: child.output?.[3] ?? '',
-        stderr: `${child.stderr ?? ''}\n${message}`,
-      };
-    }
-    if (timedOut) {
-      process.stderr.write(
-        `[install-electron] attempt aborted after ${attemptTimeoutMs}ms without completing the download\n`,
-      );
-    }
-    return {
-      status: child.status,
-      signal: child.signal,
-      timedOut,
-      context: child.output?.[3] ?? '',
-      stderr: child.stderr ?? '',
-    };
-  });
+  const result = await installWithRetry(() =>
+    runInstallerAttempt({
+      installerPath: installer,
+      launcherPath: launcher,
+      repositoryRoot,
+      timeoutMs: attemptTimeoutMs,
+    }),
+  );
 
   if (result.signal && result.timedOut !== true) {
     process.kill(process.pid, result.signal);
