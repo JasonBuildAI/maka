@@ -1,1 +1,1 @@
-- claim: z9k3 | 2026-10-11T11:53:42Z | 旧PR: none | 缺陷: 两个共享脱敏器都不认识细粒度 GitHub PAT（github_pat_），token 原样进入显示的会话面板/TUI、转录与诊断导出 | 文件: packages/core/src/redaction.ts,packages/core/src/display-redaction.ts | issue: #待回填
+- claim: z9k3 | 2026-10-11T11:53:42Z | 旧PR: none | 缺陷: both shared redactors miss fine-grained GitHub PATs (github_pat_), so the token reaches the session panel/TUI, transcript, and diagnostics unmasked | 文件: packages/core/src/redaction.ts,packages/core/src/display-redaction.ts | issue: #TBD
