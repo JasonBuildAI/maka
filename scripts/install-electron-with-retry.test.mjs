@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { installWithRetry } from './install-electron-with-retry.mjs';
+import { installWithRetry, resolveAttemptTimeoutMs } from './install-electron-with-retry.mjs';
 
 test('waits through a sustained transient Electron download outage', async () => {
   const attempts = [];
@@ -42,4 +42,53 @@ test('waits through a sustained transient Electron download outage', async () =>
   assert.equal(result.status, 0);
   assert.deepEqual(attempts, [1, 2, 3, 4, 5]);
   assert.deepEqual(delays, [2_000, 4_000, 8_000, 16_000]);
+});
+
+test('retries an attempt that exceeded the per-attempt timeout', async () => {
+  const attempts = [];
+  const delays = [];
+
+  const result = await installWithRetry(
+    async (attempt) => {
+      attempts.push(attempt);
+      return attempt < 3
+        ? { status: null, signal: 'SIGTERM', timedOut: true, context: '' }
+        : { status: 0, context: '' };
+    },
+    {
+      wait: async (delay) => delays.push(delay),
+      warn: () => {},
+    },
+  );
+
+  assert.equal(result.status, 0);
+  assert.deepEqual(attempts, [1, 2, 3]);
+  assert.deepEqual(delays, [2_000, 4_000]);
+});
+
+test('keeps terminal signal termination immediate', async () => {
+  const attempts = [];
+
+  const result = await installWithRetry(
+    async (attempt) => {
+      attempts.push(attempt);
+      return { status: null, signal: 'SIGINT', context: '' };
+    },
+    {
+      wait: async () => assert.fail('a terminal signal must not be retried'),
+      warn: () => {},
+    },
+  );
+
+  assert.equal(result.signal, 'SIGINT');
+  assert.deepEqual(attempts, [1]);
+});
+
+test('resolves the per-attempt timeout from the environment', () => {
+  const variable = 'MAKA_ELECTRON_INSTALL_ATTEMPT_TIMEOUT_MS';
+
+  assert.equal(resolveAttemptTimeoutMs({}), 600_000);
+  assert.equal(resolveAttemptTimeoutMs({ [variable]: '15000' }), 15_000);
+  assert.equal(resolveAttemptTimeoutMs({ [variable]: '0' }), 600_000);
+  assert.equal(resolveAttemptTimeoutMs({ [variable]: 'soon' }), 600_000);
 });
